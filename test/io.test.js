@@ -39,18 +39,29 @@ test('io()', async t => {
 
     await t.test('with class-instance auth', async t => {
       t.beforeEach(async t => {
-        t.server.io.use((socket, next) =>
-          socket.handshake.auth.token === 'ok'
-            ? next()
-            : next(new Error('forbidden'))
-        )
+        t.server.io.use((socket, next) => {
+          t.handshakeAuth = socket.handshake.auth
+          next()
+        })
         t.socket.auth = new Auth('ok')
         t.socket.connect()
         await once(t.socket, 'connect')
       })
 
-      await t.test('normalizes and forwards auth to the handshake', t => {
-        t.assert.strictEqual(t.socket.connected, true)
+      await t.test('normalizes the instance into the handshake auth', t => {
+        t.assert.deepStrictEqual(t.handshakeAuth, { token: 'ok' })
+      })
+    })
+
+    await t.test('when the server rejects the handshake', async t => {
+      t.beforeEach(async t => {
+        t.server.io.use((socket, next) => next(new Error('forbidden')))
+        t.socket.connect()
+        ;[t.failure] = await once(t.socket, 'connect_error')
+      })
+
+      await t.test('emits connect_error carrying the Error message', t => {
+        t.assert.match(t.failure.message, /forbidden/i)
       })
     })
 
@@ -73,11 +84,17 @@ test('io()', async t => {
 
     await t.test('with autoConnect disabled', async t => {
       t.beforeEach(async t => {
-        await new Promise(resolve => setTimeout(resolve, 100))
+        await new Promise(resolve => setTimeout(resolve, 50))
+        t.before = t.socket.connected
+        t.socket.connect()
+        await once(t.socket, 'connect')
       })
 
-      await t.test('stays disconnected until connect()', t => {
-        t.assert.strictEqual(t.socket.connected, false)
+      await t.test('connects only once connect() is called', t => {
+        t.assert.deepStrictEqual(
+          { before: t.before, after: t.socket.connected },
+          { before: false, after: true }
+        )
       })
     })
 
@@ -268,13 +285,17 @@ test('io()', async t => {
       t.beforeEach(async t => {
         t.handler = t.mock.fn()
         t.socket.once('news', t.handler)
+
+        let delivered = 0
+        const twice = new Promise(resolve =>
+          t.socket.on('news', () => { if (++delivered === 2) resolve() })
+        )
         t.serverSocket.emit('news', { n: 1 })
-        await once(t.socket, 'news')
         t.serverSocket.emit('news', { n: 2 })
-        await new Promise(resolve => setTimeout(resolve, 50))
+        await twice
       })
 
-      await t.test('fires only once', t => {
+      await t.test('fires only on the first event', t => {
         t.assert.strictEqual(t.handler.mock.callCount(), 1)
       })
     })
@@ -284,31 +305,16 @@ test('io()', async t => {
         t.handler = t.mock.fn()
         t.socket.on('news', t.handler)
         t.socket.off('news', t.handler)
+
+        const witnessed = once(t.socket, 'tick')
         t.serverSocket.emit('news', { n: 1 })
-        await new Promise(resolve => setTimeout(resolve, 50))
+        t.serverSocket.emit('tick', {})
+        await witnessed
       })
 
       await t.test('stops further delivery', t => {
         t.assert.strictEqual(t.handler.mock.callCount(), 0)
       })
-    })
-  })
-
-  await t.test('#on connect_error', async t => {
-    t.beforeEach(async t => {
-      t.server = await server()
-      t.server.io.use((socket, next) => next(new Error('forbidden')))
-      t.socket = t.io(t.server.url, {
-        autoConnect: false,
-        transports: ['websocket'],
-        reconnection: false
-      })
-      t.socket.connect()
-      ;[t.failure] = await once(t.socket, 'connect_error')
-    })
-
-    await t.test('delivers an Error carrying the message', t => {
-      t.assert.match(t.failure.message, /forbidden/i)
     })
   })
 

@@ -629,10 +629,7 @@
     // Mirror Socket.IO's wire encoding on the main thread: drop functions and
     // `undefined`, honour `toJSON()`, surface cycles, reject binary loudly. The
     // result is structured-clone-safe, so postMessage cannot throw.
-    const toWire = value =>
-      value === undefined
-        ? value
-        : JSON.parse(JSON.stringify(value, wireReplacer))
+    const toWire = value => JSON.parse(JSON.stringify(value, wireReplacer))
 
     const socketArgs = (event, args) => {
       if (event === 'connect')
@@ -648,10 +645,10 @@
     }
 
     const managerArgs = (event, args) => {
-      if (event === 'reconnect_error' || event === 'error')
+      if (event === 'reconnect_error')
         return [makeError(args[1]?.value)]
 
-      if (event === 'reconnect_failed' || event === 'ping')
+      if (event === 'reconnect_failed')
         return []
 
       return [args[1]?.value]
@@ -719,12 +716,7 @@
 
         this.opts = {
           get query() { return socket._query },
-          set query(value) {
-            socket._query = value
-
-            if (socket._started)
-              core.set({ query: toWire(value) }).catch(noop)
-          }
+          set query(value) { socket._query = value }
         }
       }
 
@@ -781,9 +773,6 @@
       get auth() { return this._auth }
       set auth(value) {
         this._auth = value
-
-        if (this._started)
-          this._core.set({ auth: toWire(value) }).catch(noop)
       }
 
       on(event, handler) {
