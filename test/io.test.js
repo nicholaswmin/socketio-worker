@@ -316,6 +316,18 @@ test('io()', async t => {
         t.assert.strictEqual(t.handler.mock.callCount(), 0)
       })
     })
+
+    await t.test('on a client-initiated disconnect', async t => {
+      t.beforeEach(async t => {
+        const arrived = once(t.socket, 'disconnect')
+        t.socket.disconnect()
+        ;[t.reason] = await arrived
+      })
+
+      await t.test('delivers the io client disconnect reason', t => {
+        t.assert.match(t.reason, /io client disconnect/)
+      })
+    })
   })
 
   await t.test('socket.io', async t => {
@@ -354,6 +366,28 @@ test('io()', async t => {
       await t.test('emits reconnect_attempt with the attempt number', t => {
         t.assert.ok(Number.isInteger(t.attempts[0]))
       })
+    })
+  })
+
+  await t.test('when the worker crashes', async t => {
+    t.beforeEach(t => {
+      t.fixture.context.Worker = class {
+        constructor() {
+          queueMicrotask(() => this.onerror(new Error('worker crashed')))
+        }
+
+        postMessage() {}
+        terminate() {}
+      }
+
+      t.socket = t.io('http://socket.test', { autoConnect: false })
+      t.failure = once(t.socket, 'connect_error')
+      t.socket.connect()
+    })
+
+    await t.test('surfaces a connect_error carrying the Error', async t => {
+      const [error] = await t.failure
+      t.assert.match(error.message, /crashed/i)
     })
   })
 })

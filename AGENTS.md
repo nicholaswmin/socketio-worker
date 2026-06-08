@@ -81,6 +81,10 @@ server:event                         -> forwarded unchanged
 > `proxy:*` events are bridge-internal. Do not document or stabilize.
 > May be renamed or removed without notice.
 
+The `io()` facade maps a fatal worker failure (`proxy:worker_error` /
+`proxy:message_error`, or a rejected `ready`) onto `socket.on('connect_error')`
+as an `Error`, so a dead worker surfaces instead of hanging.
+
 ## Error Taxonomy
 
 ```text

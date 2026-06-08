@@ -358,6 +358,7 @@
         this.connected = false
         this.disconnected = true
         this.active = false
+        this.recovered = false
         this.id = null
         this.transport = null
         this.reconnecting = false
@@ -483,7 +484,6 @@
 
         try {
           payload = message.toJSON()
-          assertJsonSafe(payload, 'Socket.IO worker call')
         } catch (error) {
           return Promise.reject(error)
         }
@@ -570,7 +570,7 @@
         if (this.worker && typeof this.worker.terminate === 'function')
           this.worker.terminate()
 
-        this._emitLocal(reason, raw)
+        this._emitLocal(reason, serialized)
       }
 
       _rejectCall(id, error) {
@@ -692,6 +692,22 @@
         else
           this._listeners[event] = listeners
             .filter(fn => fn !== handler && fn.listener !== handler)
+
+        if (!this._listeners[event]?.length)
+          this._unbind(event)
+      }
+
+      emit(event, ...args) {
+        for (const fn of (this._listeners[event] || []).slice())
+          fn(...args)
+      }
+
+      _unbind(event) {
+        if (this._bound[event])
+          this._core.off(this._coreEvent(event), this._bound[event])
+
+        delete this._bound[event]
+        delete this._listeners[event]
       }
 
       _bind(event) {
@@ -759,6 +775,22 @@
         })
         this._events = new EventBridge(this._core, event => event, socketArgs)
         this.io = new ManagerFacade(this._core, this)
+        this._failed = false
+
+        const fail = value => {
+          if (this._failed)
+            return
+
+          this._failed = true
+          this._events.emit(
+            'connect_error',
+            value instanceof Error ? value : makeError(value)
+          )
+        }
+
+        this._core.on('proxy:worker_error', fail)
+        this._core.on('proxy:message_error', fail)
+        this._core.ready.catch(fail)
 
         if (auto)
           this.connect()

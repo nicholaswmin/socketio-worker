@@ -57,6 +57,10 @@ The worker does not inspect page script tags; pass both URLs through
   thread and invoked with the server's reply.  
 - `socket.id` / `connected` / `disconnected` / `active` / `recovered` are
   snapshots synced from the worker.  
+- A worker crash, `messageerror`, or a failed worker/library load surfaces as a
+  `connect_error` carrying an `Error` — a dead worker never hangs silently.  
+- Ack callbacks resolve via `emitWithAck`, so they inherit the worker-call timeout
+  (`io.config.timeout`, default `20000`); a vanilla Socket.IO ack waits forever.  
 - `socket.io.*` (the `proxy:*` bridge events underneath) is internal and may
   change; use the Socket.IO-shaped manager events (`reconnect_attempt`, etc.).  
 - `close()` tears the worker down for good (no Socket.IO equivalent);
