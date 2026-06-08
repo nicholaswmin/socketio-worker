@@ -4,8 +4,6 @@ import { Server } from 'socket.io'
 import vm from 'node:vm'
 import { WorkerHost } from './worker.js'
 
-export { fixture } from './jsdom.js'
-
 export class Fixture {
   constructor() {
     this.host = new WorkerHost()

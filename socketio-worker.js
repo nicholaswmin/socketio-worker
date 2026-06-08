@@ -609,7 +609,261 @@
     }
 
     SocketIOWorker.prototype = SocketIOWorkerCore.prototype
+
+    const noop = () => {}
+
+    const isBinary = value =>
+      value instanceof ArrayBuffer ||
+      ArrayBuffer.isView(value) ||
+      (typeof Blob !== 'undefined' && value instanceof Blob)
+
+    const wireReplacer = (key, value) => {
+      if (isBinary(value))
+        throw new TypeError(
+          'Socket.IO emit: binary is not supported by the worker transport'
+        )
+
+      return value
+    }
+
+    // Mirror Socket.IO's wire encoding on the main thread: drop functions and
+    // `undefined`, honour `toJSON()`, surface cycles, reject binary loudly. The
+    // result is structured-clone-safe, so postMessage cannot throw.
+    const toWire = value =>
+      value === undefined
+        ? value
+        : JSON.parse(JSON.stringify(value, wireReplacer))
+
+    const socketArgs = (event, args) => {
+      if (event === 'connect')
+        return []
+
+      if (event === 'disconnect')
+        return [args[1]?.value]
+
+      if (event === 'connect_error')
+        return [makeError(args[1]?.value)]
+
+      return args
+    }
+
+    const managerArgs = (event, args) => {
+      if (event === 'reconnect_error' || event === 'error')
+        return [makeError(args[1]?.value)]
+
+      if (event === 'reconnect_failed' || event === 'ping')
+        return []
+
+      return [args[1]?.value]
+    }
+
+    class EventBridge {
+      constructor(core, coreEvent, mapArgs) {
+        this._core = core
+        this._coreEvent = coreEvent
+        this._mapArgs = mapArgs
+        this._listeners = {}
+        this._bound = {}
+      }
+
+      on(event, handler) {
+        if (!this._listeners[event])
+          this._listeners[event] = []
+
+        this._listeners[event].push(handler)
+        this._bind(event)
+      }
+
+      once(event, handler) {
+        const wrapper = (...args) => {
+          this.off(event, wrapper)
+          handler(...args)
+        }
+
+        wrapper.listener = handler
+        this.on(event, wrapper)
+      }
+
+      off(event, handler) {
+        const listeners = this._listeners[event]
+
+        if (!listeners)
+          return
+
+        if (!handler)
+          delete this._listeners[event]
+        else
+          this._listeners[event] = listeners
+            .filter(fn => fn !== handler && fn.listener !== handler)
+      }
+
+      _bind(event) {
+        if (this._bound[event])
+          return
+
+        this._bound[event] = (...args) => {
+          const mapped = this._mapArgs(event, args)
+
+          for (const fn of (this._listeners[event] || []).slice())
+            fn(...mapped)
+        }
+
+        this._core.on(this._coreEvent(event), this._bound[event])
+      }
+    }
+
+    class ManagerFacade {
+      constructor(core, socket) {
+        this._events =
+          new EventBridge(core, event => `proxy:${event}`, managerArgs)
+
+        this.opts = {
+          get query() { return socket._query },
+          set query(value) {
+            socket._query = value
+
+            if (socket._started)
+              core.set({ query: toWire(value) }).catch(noop)
+          }
+        }
+      }
+
+      on(event, handler) {
+        this._events.on(event, handler)
+
+        return this
+      }
+
+      once(event, handler) {
+        this._events.once(event, handler)
+
+        return this
+      }
+
+      off(event, handler) {
+        this._events.off(event, handler)
+
+        return this
+      }
+    }
+
+    class SocketFacade {
+      constructor(url, options) {
+        const settings = { ...options }
+        const auto = settings.autoConnect !== false
+
+        settings.autoConnect = false
+
+        this._url = url
+        this._auth = settings.auth ?? undefined
+        this._query = settings.query ?? undefined
+        this._started = false
+        this._buffer = []
+        this._core = new SocketIOWorkerCore({
+          src: io.config.src,
+          lib: io.config.lib,
+          timeout: io.config.timeout,
+          options: settings
+        })
+        this._events = new EventBridge(this._core, event => event, socketArgs)
+        this.io = new ManagerFacade(this._core, this)
+
+        if (auto)
+          this.connect()
+      }
+
+      get id() { return this._core.id }
+      get connected() { return this._core.connected }
+      get disconnected() { return this._core.disconnected }
+      get active() { return this._core.active }
+      get recovered() { return this._core.recovered }
+
+      get auth() { return this._auth }
+      set auth(value) {
+        this._auth = value
+
+        if (this._started)
+          this._core.set({ auth: toWire(value) }).catch(noop)
+      }
+
+      on(event, handler) {
+        this._events.on(event, handler)
+
+        return this
+      }
+
+      once(event, handler) {
+        this._events.once(event, handler)
+
+        return this
+      }
+
+      off(event, handler) {
+        this._events.off(event, handler)
+
+        return this
+      }
+
+      connect() {
+        this._started = true
+
+        const values = {}
+
+        if (this._auth != null)
+          values.auth = toWire(this._auth)
+
+        if (this._query != null)
+          values.query = toWire(this._query)
+
+        if (Object.keys(values).length)
+          this._core.set(values).catch(noop)
+
+        this._core.connect(this._url).catch(noop)
+        this._buffer.splice(0).forEach(m => this._send(m.event, m.data, m.ack))
+
+        return this
+      }
+
+      disconnect() {
+        this._core.disconnect().catch(noop)
+
+        return this
+      }
+
+      emit(event, ...args) {
+        const ack = typeof args.at(-1) === 'function' ? args.pop() : null
+        const data = toWire(args)
+
+        if (this._started)
+          this._send(event, data, ack)
+        else
+          this._buffer.push({ event, data, ack })
+
+        return this
+      }
+
+      close() {
+        return this._core.close()
+      }
+
+      _send(event, data, ack) {
+        if (ack)
+          this._core.call('emitWithAck', [event, ...data])
+            .then(reply => ack(reply))
+            .catch(noop)
+        else
+          this._core.emit(event, ...data).catch(noop)
+      }
+    }
+
+    function io(url, options) {
+      return new SocketFacade(url, options || {})
+    }
+
+    io.config = { src: 'socketio-worker.js', lib: null, timeout: CALL_TIMEOUT }
+
     root.SocketIOWorker = SocketIOWorker
+    root.io = io
   }
 
   function installWorker() {

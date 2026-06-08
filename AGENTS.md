@@ -22,18 +22,10 @@ thread.
 
 - Keep this package generic.  
   No app-specific events, auth schemes, routes, or reconnect policy.  
-- Pass the Socket.IO client URL explicitly as `lib`.  
-  Page script tags are not inspected.  
-- For Polymer element decisions, match Polymer 1.x idioms.  
-
-```html
-<!-- ✅ Polymer-style boolean attribute -->
-<socketio-worker auto></socketio-worker>
-
-<!-- ❌ Avoid custom long-form boolean aliases -->
-<socketio-worker auto-connect></socketio-worker>
-```
-
+- Pass the worker script and Socket.IO client URLs explicitly via `io.config`
+  (`src` / `lib`). Page script tags are not inspected.  
+- The public surface is `io()` — a Socket.IO-client drop-in. Keep it faithful to
+  the Socket.IO client API.  
 - For code and domain terms, prefer Socket.IO terminology where possible.  
   Do not thrash terminology unnecessarily.  
 
@@ -52,10 +44,13 @@ await proxy.managerCall('retryLimit', [3])
 - Payloads, call args, and method results follow Socket.IO JSON serialization.  
   `undefined` keeps Socket.IO parity.  
   Array slots become `null`; object fields are omitted.  
-- Callback acks, binary data, functions, DOM nodes, class instances, symbols,
-  and cycles do not cross the worker boundary.  
-  Callback acks would need an internal ack id so the callback stays on the main
-  thread.  
+- Binary data, functions, DOM nodes, class instances, symbols, and cycles do not
+  cross the worker boundary as-is.  
+  The `io()` facade normalises emit args / `auth` / `query` to Socket.IO's wire
+  form first (functions and `undefined` dropped, `toJSON()` honoured); cycles and
+  binary throw.  
+- Callback acks stay on the main thread: a trailing function on `io()` `emit()`
+  is invoked with the server reply (bridged via `emitWithAck`).  
 - Direct proxy mutation is local only.  
   Use `set(path, value)` or `set(object)` for worker-owned mutation.  
 - Timed-out `connect()` calls must not leave a late visible connection.  
@@ -140,8 +135,8 @@ return callMethod(manager, method, args)
 ## Testing Guidelines
 
 - You **MUST** run `node --test` with `--test-concurrency=1`.  
-  Polymer/jsdom fixtures load HTML imports in one process and race under file
-  concurrency.  
+  Tests share VM worker hosts and timing-sensitive reconnect flows that race
+  under file concurrency.  
 - You **MUST** nest tests as `subject -> #method -> context -> behavior`.  
 - You **MUST** put shared **arrange + act** in the nearest owning
   `t.beforeEach()`.  
@@ -218,18 +213,16 @@ Test fixture roles:
 
 ```text
 test/main.test.js      -> real Socket.IO server flows
+test/io.test.js        -> io() facade (Socket.IO-client drop-in) behavior
 test/proxy.test.js     -> proxy / worker bridge mechanics
-test/element.test.js   -> Polymer wrapper behavior
 test/utils/index.js    -> core Fixture, server helper, shared exports
-test/utils/jsdom.js    -> Polymer/jsdom fixture
-test/utils/socket.io.js -> vendored Socket.IO browser client for VM/jsdom
+test/utils/socket.io.js -> vendored Socket.IO browser client for the VM worker
 test/utils/worker.js   -> shared VM WorkerHost
 ```
 
 > [!TIP]
-> - jsdom + Polymer boot is slow.
-> - The fixture caches the DOM; each `fixture()` recreates only the element.
-> - Per-element `detached()` terminates its own worker — safe across tests.
+> - Each `Fixture` loads the worker script into its own VM context.
+> - `fixture.close()` terminates every worker it spawned — safe across tests.
 
 ### Test Utilities
 
