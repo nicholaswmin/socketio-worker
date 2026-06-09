@@ -5,7 +5,8 @@
   "description": "Comparative browser harness: facade vs real io. Measures the MAIN-THREAD cost and reconnect-event timing the worker bridge ADDS over a direct socket.io client, by running identical workloads through both. Not part of `npm test`.",
   "scripts": {
     "load": "node load.mjs",
-    "storm": "node storm.mjs"
+    "storm": "node storm.mjs",
+    "fuzz": "node fuzz.mjs"
   },
   "dependencies": {
     "socket.io": "4.8.3",
