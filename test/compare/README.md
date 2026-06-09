@@ -1,9 +1,10 @@
 # `test/compare` — facade vs real `io`
 
-A self-contained **browser** harness that runs **identical** workloads through the
-real Socket.IO client (`io`) and through the worker `io()` facade, and reports the
-**delta**. It is **not** part of `npm test` (which is Node-only and pristine) and
-adds no dependencies to the package — it has its own `package.json`.
+A self-contained harness that runs **identical** workloads through the real
+Socket.IO client (`io`) and the worker `io()` facade and reports the **delta**
+(`load`/`storm` drive a real browser; `fuzz` runs in Node). It is **not** part of
+`npm test` (which is Node-only and pristine) and adds no dependencies to the main
+package — it has its own `package.json`.
 
 ## Why separate
 
@@ -21,6 +22,7 @@ cd test/compare
 PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers npm install
 PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers npm run load    # main-thread ms/emit + long-tasks -> load-results.json
 PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers npm run storm   # reconnect-event order + timing  -> storm-results.json
+npm run fuzz                                              # differential wire-parity (fast-check, Node)
 ```
 
 ## What each measures
@@ -33,6 +35,11 @@ PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers npm run storm   # reconnect-event orde
   the `connect_error` / `reconnect_error` / `reconnect_failed` sequence + timing for
   both clients, to confirm the facade preserves the ordering and to quantify the
   latency it adds.
+- **fuzz** — property-based (fast-check) differential check: random/adversarial
+  values must reach the wire identically to a real `io` client
+  (`JSON.parse(JSON.stringify(...))`), or throw exactly when io would; any failure
+  shrinks to a minimal counterexample. Binary is excluded (realm-specific — see the
+  note in `fuzz.mjs`).
 
 The server is a generic echo/sink (no app events); it serves the real
 `socketio-worker.js` and the vendored browser client, so both paths exercise the
