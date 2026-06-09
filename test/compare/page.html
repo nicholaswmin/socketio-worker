@@ -1,0 +1,113 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>facade vs io — comparative harness</title>
+<!-- real socket.io browser client: sets window.io -->
+<script src="/socket.io.js"></script>
+<script>window.__realIo = window.io</script>
+<!-- the facade: overwrites window.io with the drop-in io() -->
+<script src="/socketio-worker.js"></script>
+<script>
+'use strict'
+window.__facadeIo = window.io
+window.__facadeIo.config = { src: '/socketio-worker.js', lib: '/socket.io.js' }
+
+const O = location.origin
+
+// A payload shaped/sized like real traffic without being app-specific:
+// a nested object plus one large string field (stands in for an exportJSON
+// blob or a base64 image when `bytes` is large).
+const makePayload = bytes => ({
+  name: 'evt',
+  seq: 0,
+  meta: { a: 1, b: true, tags: ['x', 'y'], nested: { c: [1, 2, 3], d: 'tag' } },
+  blob: 'x'.repeat(Math.max(0, bytes - 120))
+})
+
+const connect = mode => new Promise((resolve, reject) => {
+  const opts = { transports: ['websocket'], reconnection: false }
+  const s = mode === 'real'
+    ? window.__realIo(O, opts)
+    : window.__facadeIo(O, { ...opts, autoConnect: false })
+  s.on('connect', () => resolve(s))
+  s.on('connect_error', reject)
+  if (mode !== 'real') s.connect()
+})
+
+const close = s => { try { s.close ? s.close() : s.disconnect() } catch (e) {} }
+
+// Measure the synchronous MAIN-THREAD cost of N emit() calls, plus any
+// long-tasks (>50ms jank) the browser observes during the burst.
+window.benchLoad = async (mode, { n, bytes }) => {
+  const s = await connect(mode)
+  const payload = makePayload(bytes)
+  const warm = Math.min(50, n)
+  for (let i = 0; i < warm; i++) s.emit('bench:event', payload)
+  await new Promise(r => setTimeout(r, 200))
+
+  const tasks = []
+  let obs
+  try {
+    obs = new PerformanceObserver(list => {
+      for (const e of list.getEntries()) tasks.push(e.duration)
+    })
+    obs.observe({ entryTypes: ['longtask'] })
+  } catch (e) {}
+
+  const t0 = performance.now()
+  for (let i = 0; i < n; i++) { payload.seq = i; s.emit('bench:event', payload) }
+  const t1 = performance.now()
+
+  await new Promise(r => setTimeout(r, 400))
+  if (obs) obs.disconnect()
+  close(s)
+
+  const totalMainMs = t1 - t0
+  return {
+    mode, n, bytes,
+    totalMainMs,
+    msPerEmit: totalMainMs / n,
+    longTasks: tasks.length,
+    maxLongTaskMs: tasks.reduce((a, b) => Math.max(a, b), 0)
+  }
+}
+
+// ---- storm: reconnect-event timing through both clients ----
+const stormOpts = mode => ({
+  transports: ['websocket'], reconnection: true, reconnectionAttempts: 3,
+  reconnectionDelay: 80, reconnectionDelayMax: 80, randomizationFactor: 0,
+  timeout: 1000, ...(mode === 'real' ? {} : { autoConnect: false })
+})
+
+window.makeStormClient = mode => {
+  const log = []
+  const stamp = (ev, extra) => log.push({ ev, t: performance.now(), ...(extra || {}) })
+  const s = mode === 'real'
+    ? window.__realIo(O, stormOpts(mode))
+    : window.__facadeIo(O, stormOpts(mode))
+
+  s.on('connect', () => stamp('connect'))
+  s.on('disconnect', r => stamp('disconnect', { reason: String(r) }))
+  s.on('connect_error', e => stamp('connect_error', { msg: e && e.message, isError: e instanceof Error }))
+  s.io.on('reconnect_attempt', a => stamp('reconnect_attempt', { a }))
+  s.io.on('reconnect', () => stamp('reconnect'))
+  s.io.on('reconnect_error', e => stamp('reconnect_error', { msg: e && e.message, isError: e instanceof Error }))
+  s.io.on('reconnect_failed', () => stamp('reconnect_failed'))
+
+  if (mode !== 'real') s.connect()
+  window.__storm = window.__storm || {}
+  window.__storm[mode] = { log }
+  return true
+}
+
+window.__stormLogs = () => ({
+  real: (window.__storm && window.__storm.real && window.__storm.real.log) || [],
+  facade: (window.__storm && window.__storm.facade && window.__storm.facade.log) || []
+})
+
+window.__ready = true
+</script>
+</head>
+<body></body>
+</html>
